@@ -17,6 +17,7 @@ This guide is designed for quick review right before a system design interview. 
 10. [Message Queue (Asynchronous Communication)](#10-message-queue-asynchronous-communication)
 11. [Rate Limiting](#11-rate-limiting)
    - [11.1 Rate Limiting Algorithms](#111-rate-limiting-algorithms)
+   - [11.2 Algorithms Comparison & Best Use Cases](#112-algorithms-comparison--best-use-cases)
 12. [Polling (Short vs. Long Polling)](#12-polling-short-vs-long-polling)
 13. [Pub/Sub vs. Message Queue (SQS)](#13-pubsub-vs-message-queue-sqs)
 14. [Fan-Out Architecture](#14-fan-out-architecture)
@@ -203,6 +204,16 @@ This guide is designed for quick review right before a system design interview. 
 *   **Best for:** High-scale rate limiting requiring high accuracy without the memory footprint of Sliding Window Log.
 *   **Pros:** Extremely memory efficient (only stores two counters per user) and prevents window boundary spikes with high accuracy (~99%).
 *   **Cons:** The count is an estimate, assuming requests in the previous window were distributed uniformly (minor approximation).
+
+### 11.2 Algorithms Comparison & Best Use Cases
+
+| Algorithm | Memory Footprint | Accuracy | Traffic Shaping | Best Use Case (Recommended) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Token Bucket** | Very Low (1 counter + 1 timestamp) | Medium-High | Burst-friendly | **AWS/SaaS APIs:** Standard choice for user-facing APIs where clients expect elastic burst capabilities for sudden spikes. |
+| **Leaky Bucket** | Medium (Queue of size $C$) | High (Strict flow rate) | Steady-outflow | **DB Operations & API Proxies:** Protecting downstream databases from write spikes by queuing and releasing requests at a steady rate. |
+| **Fixed Window** | Extremely Low (1 counter per window) | Low | Burst-vulnerable | **Low-Scale Internal Tools:** Basic usage limits (e.g., "max 100/day") where boundary spike limits are not a critical concern. |
+| **Sliding Window Log** | High (Stores every timestamp in Redis Set) | Extremely High | Precise limit | **High Security Endpoints:** Auth, login attempts, and credit card validation interfaces where any burst bypass could be exploited. |
+| **Sliding Window Counter** | Low (2 counters per window) | High (~99% accurate) | Precise limit | **High-Scale Public APIs (e.g., Stripe):** Perfect for high-traffic environments where accuracy is needed without memory bloat in Redis. |
 
 ---
 
