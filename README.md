@@ -55,6 +55,11 @@ When a user types a URL (e.g., `https://example.com/orders`) into their browser,
      - [3.4.1 Why We Deploy Separate Services](#341-why-we-deploy-separate-services)
      - [3.4.2 Pros and Cons of Microservices Architecture](#342-pros-and-cons-of-microservices-architecture)
      - [3.4.3 💡 Interview Deep Dive: Distributed Transactions & Join Patterns](#343--interview-deep-dive-distributed-transactions--join-patterns)
+4. [Batch Processing](#4-batch-processing)
+   - [4.1 Why We Use Batch Processing & How It Solves the Problem](#41-why-we-use-batch-processing--how-it-solves-the-problem)
+   - [4.2 Core Architecture & Workflow](#42-core-architecture--workflow)
+   - [4.3 Pros and Cons of Batch Processing](#43-pros-and-cons-of-batch-processing)
+   - [4.4 💡 Interview Deep Dive: Batch vs. Stream Processing (Lambda vs. Kappa)](#44--interview-deep-dive-batch-vs-stream-processing-lambda-vs-kappa)
 
 ---
 
@@ -268,3 +273,58 @@ Horizontal scaling is the process of adding more independent servers (nodes) to 
 > **Q: How do you join data from two different databases owned by different microservices?**
 > *   **Option 1: API Composition (Gateway Join):** The API Gateway fetches data from Service A and Service B separately, joining them in memory. *Pros: Simple. Cons: High latency, memory overhead.*
 > *   **Option 2: CQRS (Command Query Responsibility Segregation):** Create a dedicated read-only database service that subscribes to events from both Service A and Service B. When data changes, events update a pre-joined, read-optimized materialized view. *Pros: Fast queries. Cons: Eventual consistency delay.*
+
+---
+
+## 4. Batch Processing
+
+### 4.1 Why We Use Batch Processing & How It Solves the Problem
+*   **The Problem:** Certain critical system tasks involve processing massive volumes of data (e.g., millions of records, daily logs, bank reconciliations, monthly billing invoices). Running these complex, long-running queries directly on active transactional databases (OLTP) during business hours degrades user performance by locking database tables and consuming vital CPU/RAM resources.
+*   **How Batch Processing Solves It:** It processes data in bulk offline during off-peak windows (non-interactive). It separates computation from the live transaction system using distributed data processing frameworks, ensuring that intensive calculations do not affect the real-time client request path.
+
+### 4.2 Core Architecture & Workflow
+Batch processing architectures typically employ a three-tier model:
+1.  **Extract-Transform-Load (ETL) pipeline:** Data is extracted from transactional databases or log stores, transformed (cleaned, aggregated, structured), and loaded into a target system (Data Warehouse or Data Lake).
+2.  **Distributed File System (HDFS / S3):** Stores massive unstructured datasets across clusters.
+3.  **Compute Engine (e.g., Apache Spark, MapReduce):** Distributes the work by splitting data into chunks, processing them in parallel on different worker nodes, and aggregating the final result.
+
+```
+┌─────────────────┐       ┌──────────────────────┐       ┌─────────────────┐
+│ OLTP Database   │ ────► │ Batch Compute Engine │ ────► │ Data Warehouse  │
+│ (Live App Data) │       │ (Apache Spark/ETL)   │       │ (OLAP/Analytics)│
+└─────────────────┘       └──────────────────────┘       └─────────────────┘
+```
+
+### 4.3 Pros and Cons of Batch Processing
+*   **Pros:**
+    *   **Resource & Cost Efficiency:** Job execution can be scheduled during off-peak hours (e.g., 2 AM) when system load and cloud compute costs are minimal.
+    *   **High Throughput:** Bulk operations reduce database transaction overhead (like connection creation and indexing updates) compared to processing records one by one.
+    *   **Fault Tolerance (Checkpointing):** If a batch process fails halfway through, the framework can resume from the last saved state or checkpoint, avoiding full execution restarts.
+*   **Cons:**
+    *   **Data Latency (Not Real-time):** Data is only as fresh as the last completed batch run (e.g., 24-hour latency for daily batches).
+    *   **Debugging Difficulty:** Tracing errors in massive datasets requires sophisticated logging, as a single bad input row can cause a multi-hour job to fail or produce corrupt aggregate outputs.
+    *   **Operational Complexity:** Requires robust orchestration tools (like Apache Airflow or Kubernetes CronJobs) to manage complex dependency graphs between jobs.
+
+### 4.4 💡 Interview Deep Dive: Batch vs. Stream Processing (Lambda vs. Kappa)
+> [!IMPORTANT]
+> **Q: What is the difference between Batch and Stream Processing?**
+>
+> | Feature | Batch Processing | Stream Processing |
+> | :--- | :--- | :--- |
+> | **Data Input** | Bounded (finite datasets processed in blocks). | Unbounded (infinite data stream processed continuously). |
+> | **Latency** | High (minutes to hours/days). | Low (milliseconds to seconds). |
+> | **Throughput** | High (optimized for processing total volume). | Low to Medium (optimized for low-latency delivery). |
+> | **Typical Tech Stack** | Hadoop, Apache Spark, Airflow, Spring Batch. | Apache Kafka, Apache Flink, Spark Streaming. |
+
+> [!CAUTION]
+> **Q: How do you design a system that requires both real-time analytical accuracy and historical completeness? (Compare Lambda vs. Kappa Architectures)**
+>
+> *   **Lambda Architecture:** Employs two parallel pathways:
+>     1.  **Speed Layer:** A stream processing engine (e.g., Flink) that processes real-time data with low latency but potentially lower accuracy (e.g., using approximate algorithms).
+>     2.  **Batch Layer:** A batch processing engine (e.g., Spark) that periodically computes highly accurate, authoritative historical views.
+>     *   *Serving Layer:* Merges queries from both layers at run-time.
+>     *   *Interview Critique:* Lambda is notoriously difficult to maintain because developers must write and debug the same business logic twice (once in the speed layer, once in the batch layer).
+>
+> *   **Kappa Architecture:** Simplifies the pipeline by removing the batch layer entirely. Everything is treated as an unbounded stream.
+>     *   *How it works:* A stream processing engine (e.g., Flink) handles both real-time data and historical reprocessing (by rewinding the Kafka offset to the beginning of the topic log and replaying the stream).
+>     *   *Interview Critique:* Highly preferred in modern architectures because it maintains a single codebase for logic.
