@@ -9,27 +9,63 @@ Structured in the exact order a request travels—from DNS lookup to downstream 
 ## 📌 The End-to-End Request Journey
 When a user types a URL (e.g., `https://example.com/orders`) into their browser, the request journeys through the following infrastructure:
 
-```
-[ User Browser ]
-       │
-       ├─► [ 1. DNS Lookup ] ──(Translates Domain -> IP Address using Anycast/GeoDNS)
-       │
-       ▼
-[ 2. Infrastructure Entry Load Balancer (L4/L7) ] ──(Entry point for Horizontal Scaling)
-       │
-       ▼
-[ 3. Node.js API Gateway ] ──(Unified Entry: Handles Auth, Rate Limiting, & Routes paths)
-       │
-       ├─► (If Path: /users) ──► [ 3.3 User-Service Load Balancer ] ──► [ Node.js User Service ]
-       │
-       └─► (If Path: /orders) ──► [ 3.3 Order-Service Load Balancer ] ─► [ Node.js Order Service ]
-                                                                                │
-                                                                       (Offloads Heavy Job)
-                                                                                ▼
-                                                                     [ 4. BullMQ / AWS SQS ]
-                                                                                │
-                                                                                ▼
-                                                                     [ Node.js Batch Workers ]
+```mermaid
+graph TD
+    classDef client fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef entry fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef gateway fill:#f96,stroke:#333,stroke-width:2px;
+    classDef lb fill:#ff9,stroke:#333,stroke-width:2px;
+    classDef service fill:#9f9,stroke:#333,stroke-width:2px;
+    classDef db fill:#9bf,stroke:#333,stroke-width:2px;
+    classDef queue fill:#fbf,stroke:#333,stroke-width:2px;
+
+    User([User Browser]) -->|1. HTTP Query| DNS[DNS Resolver]
+    DNS -->|2. Return IP| User
+    User -->|3. Route Request| EntryLB[Entry Load Balancer]
+    
+    subgraph Web Gateway Layer
+        EntryLB -->|4. Proxy Request| Gateway[Node.js API Gateway]
+    end
+
+    subgraph Internal Routing
+        Gateway -->|5. Path: /orders| OrderLB[Order Service LB]
+        Gateway -->|5. Path: /users| UserLB[User Service LB]
+    end
+
+    subgraph Node.js Microservices
+        OrderLB --> Order1[Order Service - Inst 1]
+        OrderLB --> Order2[Order Service - Inst 2]
+        UserLB --> User1[User Service - Inst 1]
+        UserLB --> User2[User Service - Inst 2]
+    end
+
+    subgraph Database Layer
+        Order1 -->|6. SQL Write| OrderDB[(Order DB)]
+        Order2 -->|6. SQL Write| OrderDB
+        User1 -->|Write| UserDB[(User DB)]
+        User2 -->|Write| UserDB
+    end
+
+    subgraph Event-Driven Fan-Out
+        Order1 -->|7. Publish Event| SNSTopic((SNS Topic: Orders))
+        SNSTopic -->|Broadcast| SQSEmail[SQS Email Queue]
+        SNSTopic -->|Broadcast| SQSShip[SQS Shipping Queue]
+    end
+
+    subgraph Asynchronous Workers
+        SQSEmail -->|8. Parallel Poll| EmailWorker[Email Worker Pool]
+        SQSShip -->|8. Parallel Poll| ShipWorker[Shipping Worker Pool]
+        
+        EmailWorker -->|9. Send API Request| SendGrid[SendGrid / SES]
+        ShipWorker -->|Write| ShipDB[(Shipping DB)]
+    end
+
+    class User client;
+    class DNS,EntryLB,OrderLB,UserLB lb;
+    class Gateway gateway;
+    class Order1,Order2,User1,User2,EmailWorker,ShipWorker service;
+    class OrderDB,UserDB,ShipDB db;
+    class SNSTopic,SQSEmail,SQSShip queue;
 ```
 
 ---
@@ -81,14 +117,30 @@ When a user types a URL (e.g., `https://example.com/orders`) into their browser,
 
 ### 1.1 Why We Use DNS & How It Solves the Problem
 *   **The Problem:** Computers identify and connect to each other over the network using numerical IP addresses. Humans cannot easily memorize these number sequences. Furthermore, if a server's IP address changes due to migrations, hardware failure, or scaling, hardcoded client configurations will break immediately.
-*   **How DNS Solves It:** DNS acts as the "phonebook of the Internet". It translates human-friendly domain names (e.g., `google.com`) into machine-readable IP addresses dynamically, separating user navigation from physical infrastructure configurations.
+*   **How DNS Solves It:** DNS acts as the "phonebook of the Internet". It translates human-readable domain names (e.g., `google.com`) into machine-readable IP addresses dynamically, separating user navigation from physical infrastructure configurations.
 
 ### 1.2 How It Works (DNS Lookup Workflow)
-1.  **Resolver:** The client's browser queries the Local DNS Resolver (usually managed by the ISP).
-2.  **Root Server:** If the IP is not cached, the Resolver queries the Root Nameserver (`.`) to locate the Top-Level Domain (TLD) server.
-3.  **TLD Server:** The TLD Server (e.g., `.com` or `.org`) directs the resolver to the Authoritative Nameserver.
-4.  **Authoritative Nameserver:** Holds the definitive DNS records (A, AAAA, CNAME) and returns the actual server IP.
-5.  **Caching:** The IP is returned to the client and cached locally for a duration defined by the Time To Live (TTL).
+The sequence below illustrates the step-by-step query propagation of a DNS lookup:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as User Browser
+    participant Resolver as Local DNS Resolver
+    participant Root as Root Server (.)
+    participant TLD as TLD Server (.com)
+    participant Auth as Authoritative Nameserver
+
+    Client->>Resolver: Query example.com
+    Note over Resolver: Check Local Cache
+    Resolver->>Root: Query example.com (DNS Cache Miss)
+    Root-->>Resolver: Referral to TLD (.com)
+    Resolver->>TLD: Query example.com
+    TLD-->>Resolver: Referral to Authoritative Name Servers
+    Resolver->>Auth: Query example.com (A/AAAA Records)
+    Auth-->>Resolver: Return IP (e.g. 192.0.2.1)
+    Resolver-->>Client: Return IP & TTL Cache
+```
 
 ### 1.3 Pros and Cons of DNS
 *   **Pros:**
@@ -228,17 +280,6 @@ Horizontal scaling is the process of adding more independent servers (nodes) to 
 *   **The Problem:** Once the API Gateway determines that a request for `/orders` must go to the `Order Service`, it cannot simply route it to a hardcoded IP. In a horizontal environment, the `Order Service` itself consists of 5 or 10 separate running container instances that are constantly scaling up, scaling down, or restarting.
 *   **How It Solves It:** Service-specific load balancers sit between the API Gateway and the downstream service instances. They coordinate with a **Service Registry** (like Consul or Kubernetes CoreDNS) to automatically distribute the gateway's request among the currently active, healthy instances of that specific microservice.
 
-```
-                  [ API Gateway ]
-                         │
-        ┌────────────────┴────────────────┐
-        ▼ (Rout: /users)                  ▼ (Route: /orders)
-  [ User LB ]                       [ Order LB ]
-    │      │                          │      │
-    ▼      ▼                          ▼      ▼
-[User-1] [User-2]                 [Order-1] [Order-2]
-```
-
 #### 3.3.2 How It Solves the Internal Service Routing Problem
 1.  **Service Registration:** When a new `Order Service` instance spins up, it registers its IP with the Service Registry.
 2.  **Health Verification:** The registry checks its health.
@@ -304,18 +345,6 @@ To implement batch processing in Node.js, we employ the following architecture:
 3.  **Job Consumers (Node.js Background Workers):** Separate Node.js processes running on isolated hardware that poll Redis, lock jobs, and process them.
 4.  **Node.js Streams API:** To prevent crashing workers due to V8 heap limits (~1.4GB), workers process files (CSVs, logs) chunk-by-chunk using **Streams** (`fs.createReadStream`, `Transform` streams) rather than loading entire files into memory.
 
-```
-[ Express App ] ──(Pushes Job)──► [ Redis / BullMQ ] 
-                                          │
-                                  (Polls & Locks Job)
-                                          ▼
-                             [ Node.js Worker Instance ]
-                                          │
-                               (Processes chunk-by-chunk)
-                                          ▼
-                               [ Node.js streams API ]
-```
-
 ---
 
 ### 4.3 Pros and Cons of Node.js Batch Processing
@@ -374,17 +403,6 @@ Instead of a synchronous call, we introduce a message queue like **Amazon SQS** 
 1.  **Checkout Service (Producer):** Receives the payment, writes order success to database, pushes a lightweight JSON payload `{ "orderId": "123", "email": "user@example.com" }` to SQS, and returns `200 OK` to the client in milliseconds.
 2.  **Amazon SQS (Broker):** Safely buffers the messages across multiple availability zones.
 3.  **Node.js Email Service (Consumer/Worker):** Runs as a pool of separate, background processes that constantly poll SQS for new messages, process them asynchronously (using `async/await` and Promises), send the emails via SendGrid/SES, and delete the messages from SQS once completed.
-
-```
-[ Checkout API ] ─(1. Writes to DB & publishes task)─► [ Amazon SQS Queue ]
-       │                                                      │
-(2. Returns 200 OK)                                           │ (3. Long Polling)
-       ▼                                                      ▼
-[ Client Browser ]                                     [ Node.js Email Workers ]
-                                                          ├─ Worker Instance 1 (Async loop)
-                                                          ├─ Worker Instance 2 (Async loop)
-                                                          └─ Worker Instance 3 (Async loop)
-```
 
 #### 4.5.3 Implementing Parallel Batch Processing
 To process millions of emails/day, a single sequential worker is insufficient. We scale workers **in parallel**:
@@ -556,6 +574,37 @@ To achieve the best of both worlds—Pub/Sub broadcast decoupling and Queue reli
 ### 4.7.6 💡 Interview Deep Dive: Fault Tolerance in SNS + SQS Fan-Out Architecture
 
 In high-scale distributed systems, failures are inevitable. When utilizing the AWS SNS + SQS Fan-Out pattern, interviewers will evaluate your ability to ensure **extreme fault tolerance, delivery guarantees, and service resilience** across the pipeline.
+
+```mermaid
+graph TD
+    classDef check fill:#ffd27f,stroke:#333,stroke-width:2px;
+    classDef step fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef success fill:#99ff99,stroke:#333,stroke-width:2px;
+    classDef fail fill:#ff9999,stroke:#333,stroke-width:2px;
+
+    Start[Worker Idle] -->|1. SQS Long Poll 20s| Fetch{Messages Available?}
+    Fetch -->|No| Start
+    Fetch -->|Yes| ReadMsg[Pull Batch of 10 Messages]
+    
+    ReadMsg --> Process{Process Message Async}
+    
+    Process -->|Success| DeleteMsg[Send DeleteMessage Call]
+    DeleteMsg -->|Removed from SQS| Start
+    
+    Process -->|Failure / Crash| ReturnQueue[Worker Fails to Delete]
+    ReturnQueue -->|Visibility Timeout Expires| RetryCount{Retry Count < MaxReceiveCount?}
+    
+    RetryCount -->|Yes| Reappear[Message Reappears in SQS]
+    Reappear --> Start
+    
+    RetryCount -->|No| Redrive[AWS Redrive Policy Triggers]
+    Redrive -->|Transfer to DLQ| DLQ[Dead Letter Queue]
+    DLQ --> Alert[Trigger CloudWatch Alert]
+    
+    class Fetch,Process,RetryCount check;
+    class ReadMsg,DeleteMsg,ReturnQueue,Reappear,Redrive step;
+    class DLQ,Alert fail;
+```
 
 #### 1. Fault Isolation (Failure Boundaries)
 *   **The Problem:** In simple Pub/Sub models (like standard event emitters or synchronous callbacks), if one downstream consumer crashes or hangs, it can block the entire message queue or cause the publisher to run out of memory/fail.
