@@ -25,6 +25,7 @@ This guide is designed for quick review right before a system design interview. 
 16. [Redis (In-Memory Caching)](#16-redis-in-memory-caching)
 17. [Content Delivery Network (CDN)](#17-content-delivery-network-cdn)
 18. [Event Sourcing](#18-event-sourcing)
+19. [CQRS (Command Query Responsibility Segregation)](#19-cqrs-command-query-responsibility-segregation)
 
 ---
 
@@ -318,3 +319,25 @@ This guide is designed for quick review right before a system design interview. 
     *   **Replay Latency (High Scale):** Replaying millions of events to reconstruct an entity's current state introduces significant latency. (Mitigated by **Snapshots**—saving the state periodically, e.g., every 100 events, so you only replay from the last snapshot).
     *   **Schema Evolution (Versioning):** As requirements change, event payload formats change. Since the event store is immutable, old events cannot be rewritten; you must write **Upcasters** (mappers) to translate old event schemas to new ones during replay.
     *   **Steep Learning Curve:** Increases overall system architecture complexity, forcing teams to handle eventual consistency, CQRS, and out-of-order event issues.
+
+---
+
+## 19. CQRS (Command Query Responsibility Segregation)
+
+*   **Interview Description:** An architectural pattern that segregates operations that mutate data (**Commands**) from operations that read data (**Queries**), using separate code paths, data models, and databases for each.
+*   **Why It Came & What Problem It Solves:**
+    *   **Read/Write Asymmetry:** Web apps are highly read-heavy (e.g., 99% reads, 1% writes). Combining them in a single database schema forces developers to optimize for both, which is a losing battle (writes require indexing removal/normalization; reads require heavy indexing/denormalization).
+    *   **Conflicting Shared Models:** A single domain model handles both strict business validation (writes) and UI reporting displays (reads). This leads to complex database joins, slow UI query response times, and bloated database entity classes.
+    *   **Locking & Resource Contention:** Transactional write updates (OLTP) compete for locks with long-running, CPU-heavy read reports (OLAP), causing system performance degradation.
+*   **How It Works (The Mechanism):**
+    *   **Command Side (Write Path):** Accepts mutation requests, validates business invariants, and writes to a write-optimized database (or Event Store).
+    *   **Query Side (Read Path):** Queries a separate, highly denormalized read database (e.g., Elasticsearch for text search, Redis for cache, or a flat relational table) tailored directly to specific UI views.
+    *   **Synchronization Bridge:** The write model publishes events (via a message broker like SQS/SNS or Kafka) when state changes. A background handler consumes these events and updates the read-only database asynchronously.
+*   **Pros:**
+    *   **Independent Scaling:** You can scale and optimize reads and writes separately (e.g., running 50 cheap read-replicas while keeping write masters small).
+    *   **Highly Optimized Queries:** Read queries perform simple `SELECT` statements from flat tables, avoiding performance-destroying SQL `JOIN` statements.
+    *   **Clean Domain Separation:** Decouples validation code from reporting presentation details, resulting in a cleaner codebase.
+*   **Cons:**
+    *   **Eventual Consistency:** Synchronization takes time. A user may click "save" but not see the update immediately if the read-model projection lags by a few milliseconds.
+    *   **Architectural Bloat:** Managing dual databases, code models, message brokers, and projection engines increases maintenance overhead.
+    *   **Data Drift Risks:** If an event is lost or processed out of order, the read-model will drift from the source-of-truth write database, requiring periodic reconciliation scripts.
