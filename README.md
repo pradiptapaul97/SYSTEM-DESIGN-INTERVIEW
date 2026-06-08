@@ -24,6 +24,7 @@ This guide is designed for quick review right before a system design interview. 
 15. [Scale-Out Database (Read Replicas)](#15-scale-out-database-read-replicas)
 16. [Redis (In-Memory Caching)](#16-redis-in-memory-caching)
 17. [Content Delivery Network (CDN)](#17-content-delivery-network-cdn)
+18. [Event Sourcing](#18-event-sourcing)
 
 ---
 
@@ -298,3 +299,22 @@ This guide is designed for quick review right before a system design interview. 
 *   **Cons:**
     *   **Cache Invalidation Complexity:** Forcing CDNs to purge outdated cached files (e.g., CSS updates) requires purging calls or query-string hashing.
     *   **Debugging Difficulties:** Troubleshooting CDN configuration edge-cases or routing failures can be highly complex.
+
+---
+
+## 18. Event Sourcing
+
+*   **Interview Description:** A design pattern where state changes are stored as a chronological sequence of immutable events in an append-only log (the Event Store), rather than just updating the current state in a traditional database. The current state is reconstructed dynamically by replaying all historical events from the beginning.
+*   **What Problem It Solves:**
+    *   **Loss of State History:** Traditional update-in-place databases delete historical history. Event Sourcing preserves the complete record of *why* and *how* a state changed over time.
+    *   **Auditability & Compliance:** Serves as a 100% accurate, tamper-proof audit trail out of the box (crucial for banking, checkout systems, and logistics).
+    *   **Time-Travel Queries:** Allows developers to inspect system state at any exact second in the past (e.g., "What was the account balance last Friday at 2:00 PM?").
+    *   **Write Performance & Lock Contention:** Eliminates expensive read-modify-write locks on rows. Since writes are append-only inserts, lock contention is minimized, boosting write performance.
+*   **Pros:**
+    *   **Perfect Audit Log:** By definition, every action is logged, ensuring zero gaps in system events.
+    *   **Reproducible Bugs:** Developers can copy production event logs to staging and replay them step-by-step to isolate and fix race conditions.
+    *   **CQRS Synergy:** Perfectly aligns with CQRS (Command Query Responsibility Segregation). The write-model appends events, while a read-processor consumes events to update highly optimized search indices or query views.
+*   **Cons:**
+    *   **Replay Latency (High Scale):** Replaying millions of events to reconstruct an entity's current state introduces significant latency. (Mitigated by **Snapshots**—saving the state periodically, e.g., every 100 events, so you only replay from the last snapshot).
+    *   **Schema Evolution (Versioning):** As requirements change, event payload formats change. Since the event store is immutable, old events cannot be rewritten; you must write **Upcasters** (mappers) to translate old event schemas to new ones during replay.
+    *   **Steep Learning Curve:** Increases overall system architecture complexity, forcing teams to handle eventual consistency, CQRS, and out-of-order event issues.
