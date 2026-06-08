@@ -160,7 +160,7 @@ This guide is designed for quick review right before a system design interview. 
 
 ## 11. Rate Limiting
 
-*   **Interview Description:** A policy layer (token bucket, leaky bucket) that throttles incoming user requests when they exceed a defined threshold (e.g., maximum 100 requests/minute per IP).
+*   **Interview Description:** A policy layer that throttles incoming user requests when they exceed a defined threshold (e.g., maximum 100 requests/minute per IP) using dedicated throttling algorithms.
 *   **What Problem It Solves:** Protects server resources from denial-of-service (DDoS) attacks, brute-forcing, scraping, API abuse, and resource starvation caused by "noisy neighbors."
 *   **Pros:**
     *   **API Availability:** Guarantees service availability for legitimate users.
@@ -168,6 +168,40 @@ This guide is designed for quick review right before a system design interview. 
 *   **Cons:**
     *   **Shared State Overhead:** Scaling rate limiters requires a centralized, fast database (like Redis) to store request counters, introducing network latency.
     *   **False Positives:** Legitimate heavy users may get blocked during periods of rapid action.
+
+### 11.1 Rate Limiting Algorithms
+
+#### 1. Token Bucket
+*   **Mechanism:** A bucket holds a maximum capacity $C$ of tokens. Tokens are refilled at a constant rate $r$ tokens/second. Each request consumes 1 token. If the bucket has tokens, the request is allowed. If the bucket is empty, the request is dropped/throttled.
+*   **Best for:** Handling bursts of traffic (e.g., allows a burst of $C$ requests instantly, then throttles to the steady refill rate $r$).
+*   **Pros:** Highly memory efficient (only stores the integer token count and the last refill timestamp); allows temporary bursts of traffic naturally.
+*   **Cons:** Fine-tuning parameters ($C$ and $r$) can be challenging.
+
+#### 2. Leaky Bucket
+*   **Mechanism:** Requests enter a queue (the bucket) of capacity $C$ and leak (are processed) at a constant, fixed rate $r$ (First-In, First-Out). If the queue is full, incoming requests overflow and are discarded.
+*   **Best for:** Smoothing out traffic rates (e.g., database writes or API proxying where downstream systems require a steady, uniform flow of requests).
+*   **Pros:** Prevents traffic bursts entirely, ensuring a highly predictable and consistent outflow rate.
+*   **Cons:** Can introduce latency for requests if the queue is large; drops requests during sudden bursts even if system capacity is idle.
+
+#### 3. Fixed Window Counter
+*   **Mechanism:** Divides time into fixed windows (e.g., 1-minute blocks). Each window has a counter. Every request in that window increments the counter. If counter > limit, requests are blocked. The counter resets when a new window starts.
+*   **Best for:** Basic rate limiting where simple implementation is preferred.
+*   **Pros:** Easy to implement and highly memory efficient (only stores one integer counter per user per window).
+*   **Cons:** **Traffic Burst at Window Boundaries:** A user can make all their allowed requests at the end of Window A and all allowed requests at the start of Window B, doubling their allowed rate in a short time frame.
+
+#### 4. Sliding Window Log
+*   **Mechanism:** Keeps a log of timestamps for every request made by a user (typically stored in a sorted set in Redis). When a request arrives, remove all logs older than the current window (e.g., current time - 1 minute). The number of remaining logs is the request count. If count < limit, add the new timestamp to log and allow request.
+*   **Best for:** High-accuracy rate limiting where window boundary spikes are completely unacceptable.
+*   **Pros:** Extremely accurate; completely eliminates window boundary spikes.
+*   **Cons:** High memory footprint since it stores a timestamp for *every single request* in the window, making it expensive for high-volume endpoints.
+
+#### 5. Sliding Window Counter
+*   **Mechanism:** A hybrid of Fixed Window and Sliding Log. It stores request counts for the current window and the previous window. When a request arrives, it computes:
+    $$\text{Estimated Count} = \text{Current Count} + \left(\text{Previous Count} \times \frac{\text{Time remaining in current window}}{\text{Window Size}}\right)$$
+    If this estimated count is less than the limit, allow the request and increment current window counter.
+*   **Best for:** High-scale rate limiting requiring high accuracy without the memory footprint of Sliding Window Log.
+*   **Pros:** Extremely memory efficient (only stores two counters per user) and prevents window boundary spikes with high accuracy (~99%).
+*   **Cons:** The count is an estimate, assuming requests in the previous window were distributed uniformly (minor approximation).
 
 ---
 
