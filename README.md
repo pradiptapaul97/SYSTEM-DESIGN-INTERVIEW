@@ -28,6 +28,7 @@ This guide is designed for quick review right before a system design interview. 
 19. [CQRS (Command Query Responsibility Segregation)](#19-cqrs-command-query-responsibility-segregation)
 20. [Hash Function](#20-hash-function)
 21. [Consistent Hashing](#21-consistent-hashing)
+22. [Video Streaming](#22-video-streaming)
 
 ---
 
@@ -390,3 +391,54 @@ This guide is designed for quick review right before a system design interview. 
     *   **Architectural Complexity:** Significantly harder to implement, maintain, and debug than simple modulo arithmetic.
     *   **Cascading Failures Risk:** If a node crashes, its clockwise neighbor immediately inherits its entire workload. Without Virtual Nodes, this can overload the neighbor, causing it to crash and trigger a domino-effect collapse.
     *   **Routing Table Overhead:** Client libraries must maintain local copies of the hash ring positions (routing table) to query the correct servers directly.
+
+---
+
+## 22. Video Streaming
+
+*   **Interview Description:** The infrastructure and protocols required to ingest, encode, package, and deliver live or on-demand video content to end-user clients globally. In system design interviews, it centers around selecting the right protocols for ingest vs. delivery, and how to scale delivery to millions of concurrent viewers.
+
+### 22.1 Real-Time Messaging Protocol (RTMP)
+*   **Interview Description:** A TCP-based streaming protocol originally designed by Macromedia/Adobe for low-latency transmission of media streams. In modern system design, it is primarily used as an **ingestion protocol** (carrying video from the broadcaster's encoding software like OBS to the media ingest server/CDN).
+*   **What Problem It Solves:** Establishes a reliable, persistent connection between the broadcaster's encoder and the ingest server to transmit live video/audio frames smoothly with low latency.
+*   **Pros:**
+    *   **Low Latency Ingest:** Offers low latency (typically 3-5 seconds) for real-time live broadcasting feeds.
+    *   **Industry Standard for Ingestion:** Universally supported by open-source and commercial encoders (e.g., OBS Studio) and ingestion APIs (e.g., YouTube Live, Twitch, Facebook Live).
+    *   **TCP Reliability:** Ensures zero packet loss and strictly ordered packet delivery for raw video streams.
+*   **Cons:**
+    *   **HTTP Incompatibility:** Runs on a dedicated port (1935) instead of standard port 80/443, making it prone to being blocked by corporate firewalls.
+    *   **Scaling Limitations:** Specialized RTMP servers (e.g., Wowza, Red5) do not scale natively using standard HTTP-based Content Delivery Networks (CDNs).
+    *   **Lack of Browser Support:** Browsers no longer support RTMP directly since the deprecation of Adobe Flash (requires transcoding to HLS/DASH for client playback).
+
+### 22.2 Real-Time Streaming Protocol (RTSP)
+*   **Interview Description:** A stateful network control protocol designed to manage streaming servers (acting as a remote control, with commands like `PLAY`, `PAUSE`, `RECORD`). It works in tandem with RTP (Real-time Transport Protocol) for actual media delivery and RTCP (Real-time Control Protocol) for transmission metrics.
+*   **What Problem It Solves:** Allows real-time interactive control of media streams with sub-second latency, making it the standard for private, closed systems like IP security cameras (CCTV) and videoconferencing systems.
+*   **Pros:**
+    *   **Sub-Second Latency:** Delivers extremely low latency (under 2 seconds, often sub-second) by utilizing UDP as the underlying transport layer.
+    *   **Stateful Controls:** Built-in interactive controls (play, pause, record, seek) supported directly at the network layer.
+*   **Cons:**
+    *   **Cannot Scale Globally:** Unsuitable for public web streaming to millions of users because standard HTTP CDNs cannot cache or route RTSP/RTP traffic.
+    *   **Firewall Blocking:** Operates on port 554 and relies heavily on UDP, which is frequently blocked by corporate firewalls and home routers.
+    *   **No Native Browser Playback:** Modern web browsers cannot play RTSP streams natively; requires running an intermediate transcoding service (e.g., converting RTSP to WebRTC or HLS) to display the video in an HTML5 player.
+
+### 22.3 Adaptive Bitrate Streaming (ABR) (HLS & MPEG-DASH)
+*   **Interview Description:** A client-driven streaming technique where a source video is encoded into multiple bitrates/resolutions and sliced into short segments (e.g., 2 to 6 seconds each). The client player dynamically requests the highest quality segment possible based on its current network bandwidth.
+    *   **HLS (HTTP Live Streaming):** Apple’s proprietary protocol (now an open standard) using `.ts` or `.m4s` segments referenced by `.m3u8` index files.
+    *   **MPEG-DASH:** An international, vendor-independent standard using `.mpd` XML manifests.
+*   **What Problem It Solves:** Solves the challenge of scaling video delivery to millions of concurrent global viewers while preventing playback interruptions (buffering) across devices with varying network speeds.
+*   **Pros:**
+    *   **Infinite Scalability via HTTP:** Video chunks are served as standard static files over ports 80/443. This allows standard HTTP CDNs to cache, replicate, and serve them to millions of users worldwide.
+    *   **Adaptive Quality Adjustment:** The player client continuously monitors download speed and switches to lower or higher resolution chunks seamlessly, preventing buffering spinners.
+    *   **Firewall Friendly:** Traverses any firewall that permits standard web (HTTP/HTTPS) traffic.
+*   **Cons:**
+    *   **High Latency:** Slicing video into chunks and buffering them at the client player introduces inherent latency (typically 10-30 seconds). *Note: Low-Latency HLS (LL-HLS) and Low-Latency DASH (LL-DASH) reduce this to 2-5s at the cost of additional complexity.*
+    *   **Heavy Transcoding Cost:** The ingestion server must encode the incoming stream into multiple resolutions (1080p, 720p, 480p, etc.) simultaneously, requiring extensive CPU/GPU resources.
+    *   **Storage Overhead:** Requires storing multiple copies of the same video chunk at different qualities on the server/CDN origin.
+
+### 22.4 Video Streaming Protocols Comparison
+
+| Protocol | Primary Role | Transport Protocol | Typical Latency | CDN Scalable? | Native Browser Playback? | Best System Design Use Case |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **RTMP** | Ingesting live stream from encoder to server | TCP (Port 1935) | Low (3-5s) | No | No | **Live Ingest:** Broadcasting feed from OBS to Twitch/YouTube ingestion servers. |
+| **RTSP** | Real-time control and monitoring of feeds | UDP/TCP (Port 554) | Sub-second (<2s) | No | No | **Security & IoT:** IP camera feeds (CCTV), local video conferencing systems. |
+| **ABR (HLS / DASH)** | Delivering video to massive viewer audiences | HTTP/HTTPS (80/443) | High (10-30s) / LL-ABR (2-5s) | **Yes (100% cached)** | Yes (Native / via JS libraries) | **Public Broadcast:** Serving live events, VOD (Netflix, YouTube), and video platforms at massive scale. |
