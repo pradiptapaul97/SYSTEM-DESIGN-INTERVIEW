@@ -16,6 +16,7 @@ This guide is designed for quick review right before a system design interview. 
 9. [Background Service / Worker](#9-background-service--worker)
 10. [Message Queue (Asynchronous Communication)](#10-message-queue-asynchronous-communication)
 11. [Rate Limiting](#11-rate-limiting)
+   - [11.1 Rate Limiting Algorithms](#111-rate-limiting-algorithms)
 12. [Polling (Short vs. Long Polling)](#12-polling-short-vs-long-polling)
 13. [Pub/Sub vs. Message Queue (SQS)](#13-pubsub-vs-message-queue-sqs)
 14. [Fan-Out Architecture](#14-fan-out-architecture)
