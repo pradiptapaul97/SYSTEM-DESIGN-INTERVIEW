@@ -26,6 +26,8 @@ This guide is designed for quick review right before a system design interview. 
 17. [Content Delivery Network (CDN)](#17-content-delivery-network-cdn)
 18. [Event Sourcing](#18-event-sourcing)
 19. [CQRS (Command Query Responsibility Segregation)](#19-cqrs-command-query-responsibility-segregation)
+20. [Hash Function](#20-hash-function)
+21. [Consistent Hashing](#21-consistent-hashing)
 
 ---
 
@@ -341,3 +343,50 @@ This guide is designed for quick review right before a system design interview. 
     *   **Eventual Consistency:** Synchronization takes time. A user may click "save" but not see the update immediately if the read-model projection lags by a few milliseconds.
     *   **Architectural Bloat:** Managing dual databases, code models, message brokers, and projection engines increases maintenance overhead.
     *   **Data Drift Risks:** If an event is lost or processed out of order, the read-model will drift from the source-of-truth write database, requiring periodic reconciliation scripts.
+
+---
+
+## 20. Hash Function
+
+*   **Interview Description:** A mathematical algorithm that takes an input string/object of arbitrary size and converts it into a fixed-size output (typically a numerical index or byte array). It is strictly deterministic: the same input will always yield the exact same output.
+*   **Why It Came & What Problem It Solves:**
+    *   **Slow Search Latency:** Traditional searches in lists or trees require $O(N)$ or $O(\log N)$ time complexity. Hashing enables instant $O(1)$ constant-time data retrievals (e.g., in hash tables/maps).
+    *   **Data Integrity Verification:** Validating whether a block of data has been altered during transfer or storage (using cryptographic hashes like SHA-256).
+    *   **Data Sharding & Load Distribution:** In distributed databases, hashing maps record keys to specific server nodes (`hash(key) % N` or Consistent Hashing), ensuring data is split evenly.
+    *   **Secure Password Storage:** Storing user credentials as one-way hashed values (e.g., bcrypt, Argon2) so that databases never store plaintext credentials.
+*   **How It Works (The Mechanism):**
+    *   **Mathematical Scrambling:** The algorithm applies non-linear operations (bitwise shifts, XOR, modular arithmetic, prime number multiplications) to scramble the input data.
+    *   **Fixed-Width Output:** Compresses any size input to a specific format (e.g., 32-bit integer or 64-character hex string).
+    *   **Collision Resolution:** Because the output space is finite but inputs are infinite, two different inputs can map to the exact same hash (Collision). Systems resolve this using **Chaining** (storing colliding items in a linked list at that index) or **Open Addressing** (finding the next empty slot).
+*   **Pros:**
+    *   **Constant Time $O(1)$ Operations:** Fast search, insert, and delete operations.
+    *   **One-Way Security:** Highly secure cryptographic hashes are mathematically impossible to reverse to reveal original input.
+    *   **Data Compacting:** Large files or objects are represented by short, fixed-length strings for easy comparisons.
+*   **Cons:**
+    *   **Collision Overhead:** If collisions occur frequently, query performance degrades from $O(1)$ to $O(N)$ (reverting to a sequential list search).
+    *   **Scale Re-hashing Penalty:** In distributed databases using basic modulo hashing (`hash(key) % N`), changing the number of servers $N$ forces a re-distribution of almost all keys (mitigated by **Consistent Hashing**).
+    *   **Loss of Sorting:** Hashed keys are distributed uniformly and randomly, losing original key sorting (unsuitable for range-based SQL queries).
+
+---
+
+## 21. Consistent Hashing
+
+*   **Interview Description:** A distributed hashing scheme that maps both database/cache keys and server nodes (shards) onto a logical circular ring (the hash ring). A key is assigned to the first server it encounters when traversing the ring in a clockwise direction.
+*   **Why It Came & What Problem It Solves:**
+    *   **Massive Cache Invalidation (The Modulo Problem):** Traditional sharding uses standard hashing (`hash(key) % N`, where $N$ is the number of servers). If a server crashes or scales out, $N$ changes, causing nearly **100% of all keys to map to new servers**. This invalidates caches and triggers a database-crashing cache stampede.
+    *   **High Data Re-sharding Overhead:** Scaling distributed databases under standard modulo hashing requires moving terabytes of data across the network to re-balance the cluster. Consistent Hashing restricts data movement to only a fraction of keys ($K/N$).
+*   **How It Works (The Mechanism):**
+    *   **The Hash Ring:** Both the server IPs/names and data keys are mapped to a circular integer space (e.g., $0$ to $2^{32}-1$) using standard hash algorithms (like MurmurHash).
+    *   **Clockwise Search:** To find which server owns a key, hash the key, locate its position on the ring, and traverse clockwise until you hit the first server node.
+    *   **Auto-Failover & Scaling:** 
+        *   *Add Node:* Place a new server on the ring. Only the keys lying between the new server and its counter-clockwise neighbor must migrate to it. All other nodes are unaffected.
+        *   *Remove Node:* If a node crashes, its keys automatically fall to the next clockwise node.
+    *   **Virtual Nodes (VNodes):** To prevent unequal spacing on the ring (which creates "hotspots" where one server handles 80% of data), each physical server is mapped to **multiple virtual nodes (VNodes)** scattered randomly across the ring, ensuring a highly uniform data distribution.
+*   **Pros:**
+    *   **Minimal Key Remapping:** Remaps only $K/N$ keys during server scaling or failure, preventing cache stampedes.
+    *   **Horizontal Elasticity:** Enables dynamic, automated scaling of database shards and caching clusters (like Redis cluster) without system downtime.
+    *   **Load Balancing:** Virtual nodes distribute traffic uniformly across all available physical hardware.
+*   **Cons:**
+    *   **Architectural Complexity:** Significantly harder to implement, maintain, and debug than simple modulo arithmetic.
+    *   **Cascading Failures Risk:** If a node crashes, its clockwise neighbor immediately inherits its entire workload. Without Virtual Nodes, this can overload the neighbor, causing it to crash and trigger a domino-effect collapse.
+    *   **Routing Table Overhead:** Client libraries must maintain local copies of the hash ring positions (routing table) to query the correct servers directly.
